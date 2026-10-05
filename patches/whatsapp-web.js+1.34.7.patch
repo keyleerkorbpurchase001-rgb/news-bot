@@ -23,10 +23,10 @@ index 800109e..7bc2d29 100644
                                  parentMessage = fetched?.messages?.[0] || null;
                              }
 diff --git a/node_modules/whatsapp-web.js/src/util/Injected/Utils.js b/node_modules/whatsapp-web.js/src/util/Injected/Utils.js
-index 540078a..9895bc5 100644
+index 540078a..5c4401c 100644
 --- a/node_modules/whatsapp-web.js/src/util/Injected/Utils.js
 +++ b/node_modules/whatsapp-web.js/src/util/Injected/Utils.js
-@@ -3,6 +3,49 @@
+@@ -3,6 +3,89 @@
  exports.LoadUtils = () => {
      window.WWebJS = {};
  
@@ -73,10 +73,63 @@ index 540078a..9895bc5 100644
 +    window.WWebJS._serialized = (id) =>
 +        id ? (id._serialized ?? id.$1 ?? String(id)) : undefined;
 +
++    /**
++     * Copies a WWeb value (e.g. the MediaData model returned by
++     * processMediaData) without its model-internal keys.
++     *
++     * Model instances expose their prop storage as `__x_<prop>` own
++     * properties plus runtime fields (`parent`, `collection`, ...). Spreading
++     * such an instance into outgoing message data copies `__x_id` next to the
++     * real `id`, so the Msg model constructor writes `id` first and then
++     * clobbers its own id slot with the MediaData sentinel value. Msg#initialize
++     * then calls getValidatedSender(this) -> getSender -> the memoized getter,
++     * which throws "Data passed to getter must include an id property (it's
++     * how we memoize) but got undefined" and the send fails.
++     * The model's data fields are still applied via its toJSON() spread.
++     *
++     * @param {object} source plain object or model instance to copy
++     * @returns {object} plain copy containing only data fields
++     */
++    window.WWebJS._modelData = (source) => {
++        const data = {};
++        if (!source) return data;
++        for (const key of Object.keys(source)) {
++            if (
++                key.startsWith('__x_') ||
++                [
++                    'parent',
++                    'collection',
++                    'stale',
++                    '_uiObservers',
++                    'mirror',
++                    '__fired',
++                    '__changes',
++                    '__initialized',
++                ].includes(key)
++            )
++                continue;
++            data[key] = source[key];
++        }
++        return data;
++    };
++
      /**
       * Helper function that compares between two WWeb versions. Its purpose is to help the developer to choose the correct code implementation depending on the comparison value and the WWeb version.
       * @param {string} lOperand The left operand for the WWeb version string to compare with
-@@ -582,7 +625,7 @@ exports.LoadUtils = () => {
+@@ -470,8 +553,10 @@ exports.LoadUtils = () => {
+             isNewMsg: true,
+             type: 'chat',
+             ...ephemeralFields,
+-            ...mediaOptions,
+-            ...(mediaOptions.toJSON ? mediaOptions.toJSON() : {}),
++            ...window.WWebJS._modelData(mediaOptions),
++            ...(mediaOptions.toJSON
++                ? window.WWebJS._modelData(mediaOptions.toJSON())
++                : {}),
+             ...quotedMsgOptions,
+             ...locationOptions,
+             ...pollOptions,
+@@ -582,7 +667,7 @@ exports.LoadUtils = () => {
  
          return window
              .require('WAWebCollections')
@@ -85,7 +138,7 @@ index 540078a..9895bc5 100644
      };
  
      window.WWebJS.editMessage = async (msg, content, options = {}) => {
-@@ -625,7 +668,9 @@ exports.LoadUtils = () => {
+@@ -625,7 +710,9 @@ exports.LoadUtils = () => {
          await window
              .require('WAWebSendMessageEditAction')
              .sendMessageEdit(msg, content, internalOptions);
@@ -96,7 +149,7 @@ index 540078a..9895bc5 100644
      };
  
      window.WWebJS.toStickerData = async (mediaInfo) => {
-@@ -919,10 +964,21 @@ exports.LoadUtils = () => {
+@@ -919,10 +1006,21 @@ exports.LoadUtils = () => {
  
      window.WWebJS.getChats = async () => {
          const chats = window.require('WAWebCollections').Chat.getModelsArray();
@@ -121,7 +174,7 @@ index 540078a..9895bc5 100644
      };
  
      window.WWebJS.getChannels = async () => {
-@@ -981,16 +1037,18 @@ exports.LoadUtils = () => {
+@@ -981,16 +1079,18 @@ exports.LoadUtils = () => {
  
          model.lastMessage = null;
          if (model.msgs && model.msgs.length) {
