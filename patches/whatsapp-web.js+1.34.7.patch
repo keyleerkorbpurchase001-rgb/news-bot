@@ -1,0 +1,195 @@
+diff --git a/node_modules/whatsapp-web.js/src/Client.js b/node_modules/whatsapp-web.js/src/Client.js
+index 800109e..7bc2d29 100644
+--- a/node_modules/whatsapp-web.js/src/Client.js
++++ b/node_modules/whatsapp-web.js/src/Client.js
+@@ -1206,13 +1206,15 @@ class Client extends EventEmitter {
+                             const timestamp = vote.t / 1000;
+                             const sender = vote.author ?? vote.from;
+                             const senderUserJid = sender._serialized;
+-
+-                            let parentMessage = Msg.get(
+-                                parentMsgKey._serialized,
++                            // WWeb 2.3000.x stores MsgKey serialization on `$1`.
++                            const parentKey = window.WWebJS._serialized(
++                                parentMsgKey,
+                             );
++
++                            let parentMessage = Msg.get(parentKey);
+                             if (!parentMessage) {
+                                 const fetched = await Msg.getMessagesById([
+-                                    parentMsgKey._serialized,
++                                    parentKey,
+                                 ]);
+                                 parentMessage = fetched?.messages?.[0] || null;
+                             }
+diff --git a/node_modules/whatsapp-web.js/src/util/Injected/Utils.js b/node_modules/whatsapp-web.js/src/util/Injected/Utils.js
+index 540078a..9895bc5 100644
+--- a/node_modules/whatsapp-web.js/src/util/Injected/Utils.js
++++ b/node_modules/whatsapp-web.js/src/util/Injected/Utils.js
+@@ -3,6 +3,49 @@
+ exports.LoadUtils = () => {
+     window.WWebJS = {};
+ 
++    /**
++     * WhatsApp Web 2.3000.x renamed the serialized string of message-key
++     * objects from `_serialized` to `$1`. Reading `_serialized` then yields
++     * `undefined`, which is passed into IndexedDB lookups and throws
++     * "Failed to execute 'get' on 'IDBObjectStore': No key or key range
++     * specified" (minified to "r: r"), breaking getChats() and message events.
++     *
++     * Restores `_serialized` on the affected objects so all existing code
++     * keeps working.
++     * Upstream: https://github.com/wwebjs/whatsapp-web.js/issues/201845
++     *
++     * @param {object} obj WhatsApp Web model whose id/key needs normalizing
++     * @returns {object} the same object
++     */
++    window.WWebJS._normalizeId = (obj) => {
++        if (!obj) return obj;
++        const keys = [obj, obj.id, obj.wid, obj.lastReceivedKey];
++        for (const key of keys) {
++            if (
++                key &&
++                typeof key === 'object' &&
++                key._serialized === undefined &&
++                typeof key.$1 === 'string'
++            ) {
++                try {
++                    Object.defineProperty(key, '_serialized', {
++                        value: key.$1,
++                        writable: true,
++                        enumerable: false,
++                        configurable: true,
++                    });
++                } catch (_) {
++                    /* frozen object: fall through to the $1 read below */
++                }
++            }
++        }
++        return obj;
++    };
++
++    /** Serialized form of a WhatsApp Web id/message-key, across WWeb versions. */
++    window.WWebJS._serialized = (id) =>
++        id ? (id._serialized ?? id.$1 ?? String(id)) : undefined;
++
+     /**
+      * Helper function that compares between two WWeb versions. Its purpose is to help the developer to choose the correct code implementation depending on the comparison value and the WWeb version.
+      * @param {string} lOperand The left operand for the WWeb version string to compare with
+@@ -582,7 +625,7 @@ exports.LoadUtils = () => {
+ 
+         return window
+             .require('WAWebCollections')
+-            .Msg.get(newMsgKey._serialized);
++            .Msg.get(window.WWebJS._serialized(newMsgKey));
+     };
+ 
+     window.WWebJS.editMessage = async (msg, content, options = {}) => {
+@@ -625,7 +668,9 @@ exports.LoadUtils = () => {
+         await window
+             .require('WAWebSendMessageEditAction')
+             .sendMessageEdit(msg, content, internalOptions);
+-        return window.require('WAWebCollections').Msg.get(msg.id._serialized);
++        return window
++            .require('WAWebCollections')
++            .Msg.get(window.WWebJS._serialized(msg.id));
+     };
+ 
+     window.WWebJS.toStickerData = async (mediaInfo) => {
+@@ -919,10 +964,21 @@ exports.LoadUtils = () => {
+ 
+     window.WWebJS.getChats = async () => {
+         const chats = window.require('WAWebCollections').Chat.getModelsArray();
+-        const chatPromises = chats.map((chat) =>
+-            window.WWebJS.getChatModel(chat),
++        const settled = await Promise.allSettled(
++            chats.map((chat) => window.WWebJS.getChatModel(chat)),
+         );
+-        return await Promise.all(chatPromises);
++        // One chat failing to serialise must not discard every other chat
++        // (WWeb 2.3000.x surfaced several of these failures).
++        const models = settled
++            .filter((result) => result.status === 'fulfilled')
++            .map((result) => result.value)
++            .filter(Boolean);
++        if (models.length < chats.length) {
++            console.warn(
++                `WWebJS: ${chats.length - models.length}/${chats.length} chats failed to serialise`,
++            );
++        }
++        return models;
+     };
+ 
+     window.WWebJS.getChannels = async () => {
+@@ -981,16 +1037,18 @@ exports.LoadUtils = () => {
+ 
+         model.lastMessage = null;
+         if (model.msgs && model.msgs.length) {
+-            const lastMessage = chat.lastReceivedKey
++            // WWeb 2.3000.x stores the key's serialized form on `$1`.
++            const lastKeySerialized = window.WWebJS._serialized(
++                chat.lastReceivedKey,
++            );
++            const lastMessage = lastKeySerialized
+                 ? window
+                       .require('WAWebCollections')
+-                      .Msg.get(chat.lastReceivedKey._serialized) ||
++                      .Msg.get(lastKeySerialized) ||
+                   (
+                       await window
+                           .require('WAWebCollections')
+-                          .Msg.getMessagesById([
+-                              chat.lastReceivedKey._serialized,
+-                          ])
++                          .Msg.getMessagesById([lastKeySerialized])
+                   )?.messages?.[0]
+                 : null;
+             lastMessage &&
+diff --git a/node_modules/whatsapp-web.js/src/util/Puppeteer.js b/node_modules/whatsapp-web.js/src/util/Puppeteer.js
+index 54df700..b232b77 100644
+--- a/node_modules/whatsapp-web.js/src/util/Puppeteer.js
++++ b/node_modules/whatsapp-web.js/src/util/Puppeteer.js
+@@ -1,23 +1,32 @@
+ /**
+- * Expose a function to the page if it does not exist
++ * Expose (or re-expose) a function to the page.
+  *
+- * NOTE:
+- * Rewrite it to 'upsertFunction' after updating Puppeteer to 20.6 or higher
+- * using page.removeExposedFunction
+- * https://pptr.dev/api/puppeteer.page.removeexposedfunction
++ * Client.inject() runs again on every page navigation. WhatsApp Web navigates
++ * on logout / relogin, and Puppeteer's binding registry can still hold the
++ * previous binding, so exposeFunction() throws
++ * "Failed to add page binding with name X: window['X'] already exists!".
++ * Remove any stale binding first and never let a re-injection crash the process.
++ * Upstream: https://github.com/wwebjs/whatsapp-web.js/issues/201852
+  *
+  * @param {object} page - Puppeteer Page instance
+  * @param {string} name
+  * @param {Function} fn
+  */
+ async function exposeFunctionIfAbsent(page, name, fn) {
+-    const exist = await page.evaluate((name) => {
+-        return !!window[name];
+-    }, name);
+-    if (exist) {
+-        return;
++    // Puppeteer keeps its binding registry across navigations, so an existing
++    // binding must be removed before a new one can be registered.
++    try {
++        await page.removeExposedFunction(name);
++    } catch (_) {
++        // nothing to remove
++    }
++    try {
++        await page.exposeFunction(name, fn);
++    } catch (e) {
++        console.warn(
++            `whatsapp-web.js patch: could not expose ${name}: ${e.message}`,
++        );
+     }
+-    await page.exposeFunction(name, fn);
+ }
+ 
+ module.exports = { exposeFunctionIfAbsent };
