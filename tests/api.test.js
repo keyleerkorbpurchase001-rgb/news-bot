@@ -122,3 +122,66 @@ test("LinkedIn sources need a public company or post URL", async () => {
   const { body: state } = await req("state", undefined, "GET");
   assert.equal(state.integrations.linkedinCollection, "public-html");
 });
+
+test("Robotics bot only accepts LinkedIn sources", async () => {
+  const { status, body } = await req("sources", {
+    bot: "robotics",
+    name: "RSS test",
+    type: "rss",
+    url: "https://spectrum.ieee.org/feeds/topic/robotics.rss",
+  });
+  assert.equal(status, 400);
+  assert.match(body.error, /only collects from LinkedIn/);
+  const { body: state } = await req("state", undefined, "GET");
+  const robotics = state.sources.filter((s) => s.bot === "robotics");
+  assert.ok(robotics.length > 1);
+  assert.ok(robotics.every((s) => s.type === "linkedin"));
+});
+
+test("each bot keeps its own news date filter", async () => {
+  const { body: state } = await req("state", undefined, "GET");
+  assert.ok(state.bots.every((b) => b.dateFilter === "today"));
+  assert.equal(
+    (
+      await req(
+        "bots/indo",
+        { dateFilter: "date", filterDate: "2026-10-01" },
+        "PATCH",
+      )
+    ).body.filterDate,
+    "2026-10-01",
+  );
+  assert.equal(
+    (await req("bots/robotics", { dateFilter: "all" }, "PATCH")).body
+      .dateFilter,
+    "all",
+  );
+  assert.equal(
+    (await req("bots/robotics", { dateFilter: "yesterday" }, "PATCH")).status,
+    400,
+  );
+  assert.equal(
+    (
+      await req(
+        "bots/robotics",
+        { dateFilter: "date", filterDate: "" },
+        "PATCH",
+      )
+    ).status,
+    400,
+  );
+});
+
+test("deleting a story removes it", async () => {
+  const { body: n } = await req("news", {
+    bot: "indo",
+    title: "Story to delete",
+    summary: "Short summary.",
+    category: "Trade",
+    url: "https://example.com/delete-me",
+  });
+  assert.equal((await req("news/" + n.id, undefined, "DELETE")).status, 200);
+  const { body: state } = await req("state", undefined, "GET");
+  assert.ok(!state.news.some((x) => x.id === n.id));
+  assert.equal((await req("news/" + n.id, undefined, "DELETE")).status, 404);
+});

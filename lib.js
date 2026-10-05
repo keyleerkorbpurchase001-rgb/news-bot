@@ -63,3 +63,14 @@ export function calendar(event) {
   ].join("\r\n");
 }
 export const makeId = () => randomUUID();
+// Calendar day (YYYY-MM-DD) in India time.
+export const indiaDay = (d = new Date()) =>
+  new Date(d).toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+// A story's day: when it was published, or first collected if the source
+// gives no date (website headlines).
+export const storyDay = (n) => indiaDay(n.published || n.created);
+// Bot date filter: "today", a chosen "date", or "all".
+export function matchesDate(bot, n, today = indiaDay()) {
+  if (bot.dateFilter === "all") return true;
+  return storyDay(n) === (bot.dateFilter === "date" ? bot.filterDate : today);
+}

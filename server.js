@@ -5,8 +5,19 @@ import dns from "node:dns/promises";
 import net from "node:net";
 import Parser from "rss-parser";
 import * as cheerio from "cheerio";
-import { scrapeLinkedin, validateLinkedinSource } from "./linkedin.js";
-import { categories, summarize, classify, calendar, makeId } from "./lib.js";
+import {
+  scrapeLinkedin,
+  validateLinkedinSource,
+  postImage,
+} from "./linkedin.js";
+import {
+  categories,
+  summarize,
+  classify,
+  calendar,
+  makeId,
+  matchesDate,
+} from "./lib.js";
 import {
   sessionView,
   connectWhatsApp,
@@ -29,7 +40,39 @@ const bot = (id, name) => ({
   categories: id === "indo" ? categories : ["Robotics", "Technology"],
   lastScheduled: "",
   lastScan: null,
+  dateFilter: "today",
+  filterDate: "",
 });
+// The Robotics bot collects industry news from LinkedIn company pages only.
+const roboticsLinkedin = [
+  [
+    "LinkedIn · Boston Dynamics",
+    "https://www.linkedin.com/company/boston-dynamics/",
+  ],
+  [
+    "LinkedIn · Universal Robots",
+    "https://www.linkedin.com/company/universal-robots/",
+  ],
+  [
+    "LinkedIn · FANUC America",
+    "https://www.linkedin.com/company/fanuc-america-corporation/",
+  ],
+  [
+    "LinkedIn · Agility Robotics",
+    "https://www.linkedin.com/company/agility-robotics/",
+  ],
+  ["LinkedIn · Figure AI", "https://www.linkedin.com/company/figure-ai/"],
+  [
+    "LinkedIn · The Robot Report",
+    "https://www.linkedin.com/company/the-robot-report/",
+  ],
+];
+// Appended to every WhatsApp news message.
+const disclaimers = {
+  indo: "⚠️ _Disclaimer: Auto-collected from public sources. Not verified by a human._",
+  robotics:
+    "⚠️ _Disclaimer: Auto-collected from LinkedIn. Not verified by a human._",
+};
 let db = fs.existsSync(file)
   ? JSON.parse(fs.readFileSync(file, "utf8"))
   : {
@@ -67,23 +110,16 @@ let db = fs.existsSync(file)
           type: "linkedin",
           enabled: true,
         },
-        {
+        ...roboticsLinkedin.map(([name, url]) => ({
           id: makeId(),
           bot: "robotics",
-          name: "LinkedIn · Robotics & Tech",
-          url: "https://www.linkedin.com/company/boston-dynamics/",
+          name,
+          url,
           type: "linkedin",
           enabled: true,
-        },
-        {
-          id: makeId(),
-          bot: "robotics",
-          name: "IEEE Spectrum · Robotics",
-          url: "https://spectrum.ieee.org/feeds/topic/robotics.rss",
-          type: "rss",
-          enabled: true,
-        },
+        })),
       ],
+      roboticsLinkedinOnly: true,
       news: [],
       history: [],
     };
@@ -104,6 +140,49 @@ for (const source of db.sources.filter((s) => s.type === "linkedin")) {
     source.error = null;
   } else if (source.error?.includes("BRAVE_SEARCH_API_KEY"))
     source.error = null;
+}
+// Earlier photo checks marked failed fetches as done; retry them once.
+if (!db.imageRecheck) {
+  for (const n of db.news) if (!n.media) delete n.mediaChecked;
+  db.imageRecheck = true;
+}
+// LinkedIn's generic placeholder image is not the post's photo.
+for (const n of db.news)
+  if (/^https:\/\/static\.licdn\.com\//.test(n.media || "")) {
+    n.media = null;
+    n.mediaType = "image";
+  }
+// Deleted stories are remembered ("bot url") so scans don't collect them again.
+db.deleted ??= [];
+// One-time cleanup: the Robotics bot keeps LinkedIn stories only.
+if (!db.roboticsNewsCleaned) {
+  db.news = db.news.filter(
+    (n) =>
+      n.bot !== "robotics" ||
+      /^https:\/\/([a-z]+\.)?linkedin\.com\//.test(n.url),
+  );
+  db.roboticsNewsCleaned = true;
+}
+for (const b of db.bots) {
+  b.dateFilter ??= "today";
+  b.filterDate ??= "";
+}
+// One-time migration: drop non-LinkedIn Robotics sources, add industry pages.
+if (!db.roboticsLinkedinOnly) {
+  db.sources = db.sources.filter(
+    (s) => s.bot !== "robotics" || s.type === "linkedin",
+  );
+  for (const [name, url] of roboticsLinkedin)
+    if (!db.sources.some((s) => s.bot === "robotics" && s.url === url))
+      db.sources.push({
+        id: makeId(),
+        bot: "robotics",
+        name,
+        url,
+        type: "linkedin",
+        enabled: true,
+      });
+  db.roboticsLinkedinOnly = true;
 }
 save();
 const busy = new Set();
@@ -161,7 +240,29 @@ app.patch("/api/bots/:id", (req, res) => {
     return res
       .status(400)
       .json({ error: "Select groups from a connected WhatsApp account" });
-  for (const key of ["selectedGroups", "categories", "time"])
+  if (
+    v.dateFilter !== undefined &&
+    !["today", "date", "all"].includes(v.dateFilter)
+  )
+    return res.status(400).json({ error: "Invalid date filter" });
+  if (
+    v.filterDate !== undefined &&
+    (typeof v.filterDate !== "string" ||
+      (v.filterDate && !/^\d{4}-\d{2}-\d{2}$/.test(v.filterDate)))
+  )
+    return res.status(400).json({ error: "Invalid date" });
+  if (
+    (v.dateFilter ?? b.dateFilter) === "date" &&
+    !(v.filterDate ?? b.filterDate)
+  )
+    return res.status(400).json({ error: "Choose a date" });
+  for (const key of [
+    "selectedGroups",
+    "categories",
+    "time",
+    "dateFilter",
+    "filterDate",
+  ])
     if (v[key] !== undefined) b[key] = v[key];
   for (const key of ["autoSend", "autoTrigger"])
     if (typeof v[key] === "boolean") b[key] = v[key];
@@ -257,6 +358,8 @@ app.post("/api/sources", async (req, res, next) => {
     getBot(bot);
     if (!name?.trim() || !["rss", "website", "linkedin"].includes(type))
       throw Error("Enter a source name and type");
+    if (bot === "robotics" && type !== "linkedin")
+      throw Error("The Robotics bot only collects from LinkedIn pages");
     await safeUrl(url);
     if (type === "linkedin") validateLinkedinSource(url);
     const s = {
@@ -306,7 +409,12 @@ async function scan(id) {
     errors = [];
   let added = 0;
   try {
-    for (const s of db.sources.filter((s) => s.bot === id && s.enabled)) {
+    for (const s of db.sources.filter(
+      (s) =>
+        s.bot === id &&
+        s.enabled &&
+        (id !== "robotics" || s.type === "linkedin"),
+    )) {
       try {
         let items = [];
         if (s.type === "linkedin") {
@@ -324,6 +432,7 @@ async function scan(id) {
           items = feed.items.slice(0, 20).map((i) => ({
             title: i.title,
             url: i.link,
+            published: i.isoDate || null,
             summary: summarize(i.contentSnippet || i.content || i.title),
             media:
               i.mediaContent?.$?.url ||
@@ -370,6 +479,7 @@ async function scan(id) {
         }
         for (const i of items.reverse()) {
           if (!i.title || !i.url || !/^https?:\/\//i.test(i.url)) continue;
+          if (db.deleted.includes(id + " " + i.url)) continue;
           const existing = db.news.find((n) => n.bot === id && n.url === i.url);
           if (existing) {
             if (!existing.published && i.published)
@@ -403,6 +513,7 @@ async function scan(id) {
     }
     b.lastScan = new Date().toISOString();
     save();
+    backfillImages();
     return { added, errors };
   } finally {
     busy.delete("scan:" + id);
@@ -459,11 +570,22 @@ app.post("/api/news", async (req, res, next) => {
       created: new Date().toISOString(),
     };
     db.news.unshift(n);
+    // A manual import brings back a previously deleted story.
+    db.deleted = db.deleted.filter((d) => d !== n.bot + " " + n.url);
     save();
     res.json(n);
   } catch (e) {
     next(e);
   }
+});
+app.delete("/api/news/:id", (req, res) => {
+  const n = db.news.find((n) => n.id === req.params.id);
+  if (!n) return res.status(404).json({ error: "Not found" });
+  db.news = db.news.filter((x) => x !== n);
+  db.deleted.push(n.bot + " " + n.url);
+  db.deleted = db.deleted.slice(-5000);
+  save();
+  res.json({ ok: true });
 });
 app.patch("/api/news/:id", (req, res) => {
   const n = db.news.find((n) => n.id === req.params.id);
@@ -518,6 +640,7 @@ async function send(id, ids) {
         n.bot === id &&
         n.status === "approved" &&
         b.categories.includes(n.category) &&
+        matchesDate(b, n) &&
         (!ids || ids.includes(n.id)),
     )) {
       n.deliveredGroups ??= [];
@@ -525,13 +648,22 @@ async function send(id, ids) {
         if (n.deliveredGroups.includes(group)) continue;
         if (!s.groups.some((g) => g.id === group))
           throw Error("A selected group is no longer available");
-        const caption = `*${n.title}*\n${n.summary}\n${n.url}`;
+        const caption = `*${n.title}*\n${n.summary}\n${n.url}\n\n${disclaimers[id]}`;
         n.deliveryProgress ??= {};
         const progress = (n.deliveryProgress[group] ??= {});
         if (!progress.messageSent) {
-          if (n.media) {
-            await safeUrl(n.media);
-            const data = await fetchPublicMedia(n.media);
+          if (!n.media && !n.mediaChecked) {
+            await addPostImage(n);
+            save();
+          }
+          // Download first; if the photo is unavailable, send text instead.
+          const data = n.media
+            ? await fetchPublicMedia(n.media).catch((e) => {
+                console.error("Media skipped:", n.media, e.message);
+                return null;
+              })
+            : null;
+          if (data) {
             const m = new w.default.MessageMedia(
               data.mime,
               data.buffer.toString("base64"),
@@ -574,6 +706,37 @@ async function send(id, ids) {
     busy.delete("send:" + id);
   }
 }
+// A story's photo from its page's preview image (og:image). The story is
+// marked checked only once its page loaded, so failed fetches retry later.
+async function addPostImage(n) {
+  try {
+    const media = postImage(await fetchPublic(n.url), n.url);
+    n.mediaChecked = true;
+    if (media) {
+      n.media = media;
+      n.mediaType = "image";
+    }
+  } catch {}
+}
+// Fill in photos for stories collected without one, one page at a time.
+let backfilling = false;
+async function backfillImages() {
+  if (backfilling) return;
+  backfilling = true;
+  try {
+    for (const n of db.news.filter(
+      (n) => !n.media && !n.mediaChecked && n.status !== "example",
+    )) {
+      await addPostImage(n);
+      if (n.media) save();
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+    save();
+  } finally {
+    backfilling = false;
+  }
+}
+setTimeout(backfillImages, 5000);
 async function fetchPublicMedia(url) {
   url = await safeUrl(url);
   const r = await fetch(url, {

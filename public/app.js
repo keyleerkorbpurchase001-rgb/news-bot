@@ -164,6 +164,13 @@ const date = (s) =>
     month: "short",
     timeZone: "Asia/Kolkata",
   });
+// Same date rules as the server (lib.js): India-time day of publish/collection.
+const indiaDay = (d = new Date()) =>
+    new Date(d).toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" }),
+  matchesDate = (n) =>
+    b().dateFilter === "all" ||
+    indiaDay(n.published || n.created) ===
+      (b().dateFilter === "date" ? b().filterDate : indiaDay());
 const time = (s) =>
   new Date(s).toLocaleTimeString("en-IN", {
     hour: "2-digit",
@@ -189,6 +196,10 @@ async function api(url, data, method = "POST") {
   if (!r.ok) throw Error(result.error || "Request failed");
   return result;
 }
+// Changes when any story gains a photo, so polling can redraw the cards.
+const mediaSignature = () =>
+  state.news.map((n) => n.id + (n.media || "")).join();
+let renderedMedia = "";
 async function load(renderPage = true) {
   const r = await fetch("/api/state");
   state = await r.json();
@@ -208,6 +219,7 @@ function render() {
     s = session();
   $("#app").innerHTML =
     `<div class="shell"><aside class="sidebar"><a class="brand" href="#" data-page="overview"><span class="brand-mark">${icon("bridge")}</span>bridge<span class="brand-dot">.</span></a><div class="workspace-label">YOUR BOTS</div><div class="bot-picker"><div class="bot-icon">${active === "indo" ? "🇮🇳" : icon("robot")}</div><div><strong>${esc(bot.name)}</strong><small>${active === "indo" ? "India × Germany" : "Innovation, delivered"}</small></div>${icon("down")}<select id="bot-select" aria-label="Select bot"><option value="indo" ${active === "indo" ? "selected" : ""}>Indo–German</option><option value="robotics" ${active === "robotics" ? "selected" : ""}>Robotics & Tech</option></select></div><nav class="nav">${navItems.map(([id, i, label]) => `<button data-page="${id}" class="${page === id ? "active" : ""}">${icon(i)}${label}${id === "news" ? `<span class="count">${news().filter((n) => n.status === "draft" || n.status === "approved").length}</span>` : ""}</button>`).join("")}<div class="nav-divider"></div><button data-page="settings" class="${page === "settings" ? "active" : ""}">${icon("settings")}Settings</button><button data-action="help">${icon("help")}Help & getting started</button></nav><div class="sidebar-bottom"><div class="connection-mini"><div class="status-line"><span class="dot ${s.status === "connected" ? "online" : ""}"></span>WhatsApp ${s.status === "connected" ? "connected" : "not connected"}</div><p>${s.status === "connected" ? "Your bot is ready to reach your communities." : "Link your account to start delivering news to your groups."}</p><button data-action="connect">${icon(s.status === "connected" ? "check" : "qr")}${s.status === "connected" ? "Manage connection" : "Connect WhatsApp"}${icon("arrow")}</button></div><div class="user"><div class="avatar">BW</div><div><strong>My workspace</strong><small>Local installation</small></div>${icon("settings")}</div></div></aside><main class="main"><header class="topbar"><div class="breadcrumbs"><button class="mobile-menu" data-action="mobile">${icon("menu")}</button>${esc(bot.name)}${icon("chevron")}<strong>${navItems.find((n) => n[0] === page)?.[2] || "Settings"}</strong></div><div class="topbar-right"><span class="local-badge"><span class="dot online"></span>Local workspace</span><button data-page="activity" aria-label="View activity">${icon("bell")}</button><div class="avatar">BW</div></div></header><div class="content">${pageContent()}<footer><span>${icon("bridge")}Bringing communities closer, one update at a time.</span><span>Made for meaningful connections<span style="color:#819b68">✳</span></span></footer></div></main></div>`;
+  renderedMedia = mediaSignature();
   bind();
 }
 function heading(title, subtitle, actions = "") {
@@ -253,7 +265,9 @@ function pageContent() {
     return (
       heading(
         "Good news starts at the source.",
-        "Follow official websites, RSS feeds, and imported LinkedIn stories.",
+        active === "robotics"
+          ? "Industry news collected from LinkedIn company pages only."
+          : "Follow official websites, RSS feeds, and imported LinkedIn stories.",
         actionButton("Check sources", "scan", "refresh") +
           actionButton("Add source", "source", "plus", true),
       ) +
@@ -305,20 +319,36 @@ function displayTime(value) {
   return `${Number(h) % 12 || 12}:${m} ${Number(h) < 12 ? "AM" : "PM"}`;
 }
 function filterBar() {
-  return `<div class="filters">${["All", ...(active === "indo" ? ["Trade", "Research", "Education", "Culture & arts", "Politics", "Events"] : ["Robotics", "Technology"])].map((c) => `<button class="filter ${filter === c ? "active" : ""}" data-filter="${esc(c)}">${esc(c)}</button>`).join("")}</div>`;
+  const mode = b().dateFilter || "today";
+  return `<div class="date-filter">${icon("calendar")}<select id="date-filter" aria-label="News date">${[
+    ["today", "Today’s news"],
+    ["date", "Selected date"],
+    ["all", "All dates"],
+  ]
+    .map(
+      ([v, l]) =>
+        `<option value="${v}" ${mode === v ? "selected" : ""}>${l}</option>`,
+    )
+    .join(
+      "",
+    )}</select>${mode === "date" ? `<input type="date" id="filter-date" value="${esc(b().filterDate)}" max="${indiaDay()}" aria-label="Selected date">` : ""}<span>${mode === "all" ? "Showing and sending stories from every date." : "Only stories published on this date are shown and sent."}</span></div><div class="filters">${["All", ...(active === "indo" ? ["Trade", "Research", "Education", "Culture & arts", "Politics", "Events"] : ["Robotics", "Technology"])].map((c) => `<button class="filter ${filter === c ? "active" : ""}" data-filter="${esc(c)}">${esc(c)}</button>`).join("")}</div>`;
 }
 function storyList(examples) {
-  let list = news().filter((n) => n.status !== "archived");
-  if (!list.length && examples) list = samples[active];
+  const all = news().filter((n) => n.status !== "archived");
+  let list = all.filter(matchesDate);
+  if (!all.length && examples) list = samples[active];
   list = list.filter((n) => filter === "All" || n.category === filter);
   if (page === "overview") list = list.slice(0, 4);
   return (
     list.map(storyCard).join("") ||
+    (all.length
+      ? `<div class="empty">${icon("calendar")}No stories from this date.<br>Choose another date or “All dates” above.</div>`
+      : "") ||
     `<div class="empty">${icon("news")}No stories here yet.<br>Check your sources or import a story to get started.<br>${actionButton("Import story", "story")}</div>`
   );
 }
 function storyCard(n) {
-  return `<article class="story"><div class="story-photo">${n.media && n.mediaType !== "video" ? `<img src="${safeLink(n.media)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<div class="no-photo">${icon(n.mediaType === "video" ? "video" : "news")}</div>`}<span class="category-tag">${esc(n.category)}</span>${n.media ? `<span class="media-badge">${icon(n.mediaType === "video" ? "video" : "image")}${n.mediaType === "video" ? "Video" : "Photo"}</span>` : ""}</div><div class="story-body"><div class="source-line"><span class="source-icon">${n.source === "LinkedIn" ? "in" : esc(n.source[0])}</span>${esc(n.source)}<time>${n.status === "example" ? "Example" : date(n.created)}</time></div><h3>${esc(n.title)}</h3><p>${esc(n.summary)}</p>${n.start ? `<a class="event-link" href="/api/news/${n.id}/calendar">${icon("calendar")}Add to calendar · ${date(n.start)}</a>` : ""}<div class="story-footer"><span class="status-pill ${n.status}">${n.status === "draft" ? "Needs review" : n.status === "approved" ? "Ready to send" : n.status === "sent" ? "Sent" : "Example story"}</span><button data-preview="${n.id}">${n.status === "draft" ? "Review story" : "Preview"}${icon("arrow")}</button></div></div></article>`;
+  return `<article class="story"><div class="story-photo">${n.media && n.mediaType !== "video" ? `<img src="${safeLink(n.media)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<div class="no-photo">${icon(n.mediaType === "video" ? "video" : "news")}</div>`}<span class="category-tag">${esc(n.category)}</span>${n.media ? `<span class="media-badge">${icon(n.mediaType === "video" ? "video" : "image")}${n.mediaType === "video" ? "Video" : "Photo"}</span>` : ""}</div><div class="story-body"><div class="source-line"><span class="source-icon">${n.source === "LinkedIn" ? "in" : esc(n.source[0])}</span>${esc(n.source)}<time>${n.status === "example" ? "Example" : date(n.published || n.created)}</time></div><h3>${esc(n.title)}</h3><p>${esc(n.summary)}</p>${n.start ? `<a class="event-link" href="/api/news/${n.id}/calendar">${icon("calendar")}Add to calendar · ${date(n.start)}</a>` : ""}<div class="story-footer"><span class="status-pill ${n.status}">${n.status === "draft" ? "Needs review" : n.status === "approved" ? "Ready to send" : n.status === "sent" ? "Sent" : "Example story"}</span><span class="story-actions">${n.status === "example" ? "" : `<button class="danger-btn" data-delete="${n.id}" aria-label="Delete story">${icon("trash")}Delete</button>`}<button data-preview="${n.id}">${n.status === "draft" ? "Review story" : "Preview"}${icon("arrow")}</button></span></div></div></article>`;
 }
 function toggleRow(title, subtitle, key) {
   return `<div class="toggle-row"><div><strong>${title}</strong><small>${subtitle}</small></div><button class="switch ${b()[key] ? "on" : ""}" data-toggle="${key}" aria-label="${title}" aria-pressed="${b()[key]}"><span></span></button></div>`;
@@ -335,7 +365,7 @@ function chosenStory() {
 }
 function previewPanel() {
   const n = chosenStory();
-  return `<section class="panel preview-panel"><div class="panel-title">${icon("send")}<h3>A peek inside WhatsApp</h3></div><p class="panel-subtitle">Short, simple, and easy to share.</p><div class="phone-preview"><div class="chat-head"><div class="chat-avatar">${active === "indo" ? "🇮🇳" : "⚙"}</div><div><strong>${active === "indo" ? "Indo–German updates" : "Robotics & Tech updates"}</strong><small>Message preview</small></div>${icon("down")}</div><div class="chat-body"><div class="chat-date"><span>${n.status === "example" ? "EXAMPLE MESSAGE" : "TODAY"}</span></div><div class="bubble">${n.media && n.mediaType !== "video" ? `<img src="${safeLink(n.media)}" alt="" referrerpolicy="no-referrer">` : ""}<h4>${esc(n.title)}</h4><p>${esc(n.summary)}</p><a class="chat-url" href="${safeLink(n.url)}" target="_blank" rel="noopener">${esc(new URL(n.url).hostname)} ${icon("external")}</a>${n.start ? `<a href="/api/news/${n.id}/calendar" class="event-link">${icon("calendar")}Add to your calendar</a>` : ""}<div class="chat-time">09:00 ${icon("double")}</div></div></div></div><p class="preview-caption">${n.status === "example" ? "Illustrative example · no message has been sent" : "Preview only · review before sending"}</p></section>`;
+  return `<section class="panel preview-panel"><div class="panel-title">${icon("send")}<h3>A peek inside WhatsApp</h3></div><p class="panel-subtitle">Short, simple, and easy to share.</p><div class="phone-preview"><div class="chat-head"><div class="chat-avatar">${active === "indo" ? "🇮🇳" : "⚙"}</div><div><strong>${active === "indo" ? "Indo–German updates" : "Robotics & Tech updates"}</strong><small>Message preview</small></div>${icon("down")}</div><div class="chat-body"><div class="chat-date"><span>${n.status === "example" ? "EXAMPLE MESSAGE" : "TODAY"}</span></div><div class="bubble">${n.media && n.mediaType !== "video" ? `<img src="${safeLink(n.media)}" alt="" referrerpolicy="no-referrer">` : ""}<h4>${esc(n.title)}</h4><p>${esc(n.summary)}</p><a class="chat-url" href="${safeLink(n.url)}" target="_blank" rel="noopener">${esc(new URL(n.url).hostname)} ${icon("external")}</a>${n.start ? `<a href="/api/news/${n.id}/calendar" class="event-link">${icon("calendar")}Add to your calendar</a>` : ""}<p><em>⚠️ Disclaimer: Auto-collected from ${active === "robotics" ? "LinkedIn" : "public sources"}. Not verified by a human.</em></p><div class="chat-time">09:00 ${icon("double")}</div></div></div></div><p class="preview-caption">${n.status === "example" ? "Illustrative example · no message has been sent" : "Preview only · review before sending"}</p></section>`;
 }
 function groupPanel() {
   const selected = groups().filter((g) => b().selectedGroups.includes(g.id));
@@ -391,16 +421,19 @@ function openModal(type, n = null) {
         "",
       )}</select></div><div class="field"><label>Media format</label><select name="mediaType"><option value="image">Photo</option><option value="video">Video</option></select></div></div><div class="field"><label>Source link</label><input name="url" type="url" required placeholder="https://linkedin.com/posts/…"></div><div class="field"><label>Photo or video URL · optional</label><input name="media" type="url" placeholder="https://example.com/photo.jpg"><small>Use a direct public URL for media you have permission to share.</small></div><div id="event-fields" hidden><div class="fields-two"><div class="field"><label>Starts · your device time zone</label><input name="start" type="datetime-local"></div><div class="field"><label>Ends · your device time zone</label><input name="end" type="datetime-local"></div></div><div class="field"><label>Location</label><input name="location" placeholder="Venue, city or meeting link"></div></div><div class="modal-footer"><button type="button" class="btn" data-close>Cancel</button><button class="btn primary" type="submit">${icon("plus")}Add to review queue</button></div></form>`;
   if (type === "source")
-    body = `<p>Collect from public RSS feeds and official websites. LinkedIn sources collect directly from public company, post, or article pages.</p><form id="source-form"><div class="field"><label>Source name</label><input name="name" required placeholder="e.g. German Embassy India"></div><div class="field"><label>Source type</label><select name="type"><option value="website">Official website</option><option value="rss">RSS feed</option><option value="linkedin">LinkedIn · public page</option></select></div><div class="field"><label>Public URL</label><input name="url" required type="url" placeholder="https://…"></div><div class="tips">For LinkedIn, use a company posts URL such as https://www.linkedin.com/company/company-name/posts/ or an individual public post URL. The homepage cannot be used as a news source.</div><div class="modal-footer"><button type="button" class="btn" data-close>Cancel</button><button class="btn primary" type="submit">Add source</button></div></form>`;
+    body = `<p>Collect from public RSS feeds and official websites. LinkedIn sources collect directly from public company, post, or article pages.</p><form id="source-form"><div class="field"><label>Source name</label><input name="name" required placeholder="e.g. German Embassy India"></div><div class="field"><label>Source type</label><select name="type">${active === "robotics" ? "" : '<option value="website">Official website</option><option value="rss">RSS feed</option>'}<option value="linkedin">LinkedIn · public page</option></select></div><div class="field"><label>Public URL</label><input name="url" required type="url" placeholder="https://…"></div><div class="tips">For LinkedIn, use a company posts URL such as https://www.linkedin.com/company/company-name/posts/ or an individual public post URL. The homepage cannot be used as a news source.</div><div class="modal-footer"><button type="button" class="btn" data-close>Cancel</button><button class="btn primary" type="submit">Add source</button></div></form>`;
   if (type === "schedule")
     body = `<p>Send reviewed stories to your selected groups every day. The schedule uses India Standard Time.</p><form id="schedule-form"><div class="field"><label>Daily delivery time · IST</label><input name="time" type="time" required value="${b().time}"></div><div class="tips">Keep auto-send enabled and the server running. Only approved stories in your enabled categories will be sent.</div><div class="modal-footer"><button class="btn" type="button" data-close>Cancel</button><button class="btn primary">Save schedule</button></div></form>`;
   if (type === "help")
     body = `<p>Your two newsrooms share one WhatsApp login, with separate sources, groups, and schedules.</p><ol class="instructions"><li>Switch between bots in the sidebar.</li><li>Connect WhatsApp and scan the QR code.</li><li>Choose groups from the group selection menu.</li><li>Add sources, then check for stories.</li><li>Import LinkedIn posts using their text and link.</li><li>Review stories and approve them.</li><li>Enable auto-send and choose a daily time.</li></ol><div class="tips">For event stories, choose Events and provide start and end dates. Recipients receive an .ics file they can add to their calendar.</div><div class="modal-footer"><button class="btn primary" data-close>Got it</button></div>`;
   if (type === "review")
-    body = `<p>${esc(n.source)} · ${esc(n.category)}</p>${n.media && n.mediaType !== "video" ? `<img src="${safeLink(n.media)}" alt="" style="width:100%;height:170px;object-fit:cover;border-radius:8px;margin-bottom:16px">` : ""}<h3 style="line-height:1.7">${esc(n.title)}</h3><div class="field" style="margin-top:18px"><label>Message summary</label><textarea id="review-summary" maxlength="230" ${n.status === "example" ? "readonly" : ""}>${esc(n.summary)}</textarea></div><a class="event-link" href="${safeLink(n.url)}" target="_blank" rel="noopener">${icon("external")}Open original source</a>${n.category === "Events" && n.status !== "example" ? `<div class="fields-two"><div class="field"><label>Event starts · your device time</label><input type="datetime-local" id="review-start" value="${n.start ? new Date(new Date(n.start) - new Date(n.start).getTimezoneOffset() * 60000).toISOString().slice(0, 16) : ""}"></div><div class="field"><label>Event ends · your device time</label><input type="datetime-local" id="review-end" value="${n.end ? new Date(new Date(n.end) - new Date(n.end).getTimezoneOffset() * 60000).toISOString().slice(0, 16) : ""}"></div></div><div class="field"><label>Event location</label><input id="review-location" value="${esc(n.location)}"></div>` : ""}${n.status === "example" ? '<div class="tips">This is a sample layout, not a collected news story. Use Check sources or Import story to add real news.</div>' : ""}<div class="modal-footer"><button class="btn" data-close>Close</button>${n.status === "draft" || n.status === "approved" ? `<button class="btn" data-archive="${n.id}">Archive</button><button class="btn primary" data-approve="${n.id}">${icon("check")}Approve story</button>` : ""}</div>`;
+    body = `<p>${esc(n.source)} · ${esc(n.category)}</p>${n.media && n.mediaType !== "video" ? `<img src="${safeLink(n.media)}" alt="" style="width:100%;height:170px;object-fit:cover;border-radius:8px;margin-bottom:16px">` : ""}<h3 style="line-height:1.7">${esc(n.title)}</h3><div class="field" style="margin-top:18px"><label>Message summary</label><textarea id="review-summary" maxlength="230" ${n.status === "example" ? "readonly" : ""}>${esc(n.summary)}</textarea></div><a class="event-link" href="${safeLink(n.url)}" target="_blank" rel="noopener">${icon("external")}Open original source</a>${n.category === "Events" && n.status !== "example" ? `<div class="fields-two"><div class="field"><label>Event starts · your device time</label><input type="datetime-local" id="review-start" value="${n.start ? new Date(new Date(n.start) - new Date(n.start).getTimezoneOffset() * 60000).toISOString().slice(0, 16) : ""}"></div><div class="field"><label>Event ends · your device time</label><input type="datetime-local" id="review-end" value="${n.end ? new Date(new Date(n.end) - new Date(n.end).getTimezoneOffset() * 60000).toISOString().slice(0, 16) : ""}"></div></div><div class="field"><label>Event location</label><input id="review-location" value="${esc(n.location)}"></div>` : ""}${n.status === "example" ? '<div class="tips">This is a sample layout, not a collected news story. Use Check sources or Import story to add real news.</div>' : ""}<div class="modal-footer"><button class="btn" data-close>Close</button>${n.status === "example" ? "" : `<button class="btn danger-btn" data-delete="${n.id}">${icon("trash")}Delete</button>`}${n.status === "draft" || n.status === "approved" ? `<button class="btn" data-archive="${n.id}">Archive</button><button class="btn primary" data-approve="${n.id}">${icon("check")}Approve story</button>` : ""}</div>`;
   if (type === "send") {
     const items = news().filter(
-        (n) => n.status === "approved" && b().categories.includes(n.category),
+        (n) =>
+          n.status === "approved" &&
+          b().categories.includes(n.category) &&
+          matchesDate(n),
       ),
       selected = groups().filter((g) => b().selectedGroups.includes(g.id));
     body = `<p>Send ${items.length} approved ${items.length === 1 ? "story" : "stories"} to ${selected.length} selected ${selected.length === 1 ? "group" : "groups"} from ${esc(b().name)}.</p><div class="tips">${selected.map((g) => esc(g.name)).join("<br>") || "No groups selected. Connect WhatsApp and select groups first."}</div>${items.length ? `<ul class="instructions">${items.map((n) => `<li>${esc(n.title)}</li>`).join("")}</ul>` : "<p>Approve a story from the news queue first.</p>"}<div class="modal-footer"><button class="btn" data-close>Cancel</button><button class="btn primary" data-confirm-send ${!items.length || !selected.length || session().status !== "connected" ? "disabled" : ""}>${icon("send")}Send now</button></div>`;
@@ -465,6 +498,19 @@ function bind() {
   document
     .querySelectorAll("[data-action]")
     .forEach((el) => (el.onclick = () => action(el.dataset.action)));
+  if ($("#date-filter"))
+    $("#date-filter").onchange = (e) =>
+      guarded(() =>
+        patchBot({
+          dateFilter: e.target.value,
+          ...(e.target.value === "date" && !b().filterDate
+            ? { filterDate: indiaDay() }
+            : {}),
+        }),
+      );
+  if ($("#filter-date"))
+    $("#filter-date").onchange = (e) =>
+      e.target.value && guarded(() => patchBot({ filterDate: e.target.value }));
   document.querySelectorAll("[data-filter]").forEach(
     (el) =>
       (el.onclick = () => {
@@ -540,6 +586,7 @@ function bind() {
           toast("Source removed");
         })),
   );
+  bindDelete();
 }
 async function action(action) {
   if (["story", "source", "schedule", "help", "send"].includes(action))
@@ -592,6 +639,31 @@ async function action(action) {
       renderConnection();
       toast("WhatsApp disconnected");
     });
+}
+// First click asks for confirmation; the second deletes the story.
+function bindDelete() {
+  document.querySelectorAll("[data-delete]").forEach(
+    (el) =>
+      (el.onclick = () => {
+        if (!el.dataset.confirm) {
+          el.dataset.confirm = "1";
+          el.innerHTML = icon("trash") + "Confirm delete";
+          setTimeout(() => {
+            if (!el.isConnected) return;
+            delete el.dataset.confirm;
+            el.innerHTML = icon("trash") + "Delete";
+          }, 4000);
+          return;
+        }
+        guarded(async () => {
+          await api("news/" + el.dataset.delete, undefined, "DELETE");
+          if (previewId === el.dataset.delete) previewId = null;
+          closeModal();
+          await load();
+          toast("Story deleted");
+        });
+      }),
+  );
 }
 function bindModal() {
   document
@@ -681,6 +753,7 @@ function bindModal() {
           toast("Story approved and ready to send");
         })),
   );
+  bindDelete();
   document.querySelectorAll("[data-archive]").forEach(
     (el) =>
       (el.onclick = () =>
@@ -719,6 +792,7 @@ setInterval(async () => {
   if (working) return;
   try {
     await load(false);
+    if (!modal && mediaSignature() !== renderedMedia) render();
     if (modal?.type === "connect") {
       renderConnection();
       if (session().status === "connected" && !window.connectionNotified) {

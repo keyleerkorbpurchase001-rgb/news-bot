@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   parseLinkedin,
   scrapeLinkedin,
+  postImage,
   validateLinkedinSource,
 } from "../linkedin.js";
 const url = "https://www.linkedin.com/posts/example_activity-1234567890-test/";
@@ -78,5 +79,31 @@ test("source URLs reject homepages, login routes and foreign hosts", () => {
       "https://www.linkedin.com/company/example/posts/?x=1",
     ),
     "https://www.linkedin.com/company/example/posts/",
+  );
+});
+
+test("post photo comes from the page preview, never LinkedIn's placeholder", () => {
+  const url = "https://www.linkedin.com/posts/acme_launch-activity-1";
+  assert.equal(
+    postImage(
+      '<meta property="og:image" content="https://media.licdn.com/dms/image/v2/abc/feedshare-shrink_800/0/1?e=1&amp;v=beta">',
+      url,
+    ),
+    "https://media.licdn.com/dms/image/v2/abc/feedshare-shrink_800/0/1?e=1&v=beta",
+  );
+  assert.equal(
+    postImage(
+      '<meta property="og:image" content="https://static.licdn.com/aero-v1/sc/h/c45fy346jw096z9pbphyyhdz7">',
+      url,
+    ),
+    null,
+  );
+  assert.equal(postImage("<html></html>", url), null);
+  assert.equal(
+    postImage(
+      '<meta property="og:image" content="https://static.licdn.com/aero-v1/sc/h/x"><main><div class="share-native-video"><video data-poster-url="https://media.licdn.com/dms/image/v2/a/videocover-high/0/1"></video></div></main>',
+      url,
+    ),
+    "https://media.licdn.com/dms/image/v2/a/videocover-high/0/1",
   );
 });

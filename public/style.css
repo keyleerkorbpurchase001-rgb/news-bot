@@ -545,6 +545,29 @@ h3 {
   width: 12px;
   height: 12px;
 }
+.date-filter {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+  font-size: 10px;
+  color: #84907d;
+}
+.date-filter svg {
+  width: 13px;
+  height: 13px;
+}
+.date-filter select,
+.date-filter input {
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font: inherit;
+  font-size: 11px;
+  background: #fff;
+  color: inherit;
+}
 .filters {
   display: flex;
   gap: 6px;
@@ -684,6 +707,15 @@ h3 {
   gap: 4px;
   font-size: 10px;
   font-weight: 600;
+}
+.story-actions {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+.story-footer button.danger-btn {
+  color: #a1715b;
+  font-weight: 500;
 }
 .story-footer svg {
   width: 13px;

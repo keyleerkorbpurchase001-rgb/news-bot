@@ -23,12 +23,14 @@ CHROME_PATH="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" npm s
 
 - One shared persistent WhatsApp Web QR authentication for both bots.
 - Real group discovery and separate group selection; no example groups are send targets.
-- Indo–German categories: Trade, Research, Education, Culture & arts, Politics, Events.
-- Robotics bot categories: Robotics and Technology.
+- Indo–German categories: Trade, Research, Education, Culture & arts, Politics, Events. Messages end with a "Auto-collected from public sources. Not verified by a human." disclaimer.
+- Robotics bot categories: Robotics and Technology. It collects industry news from LinkedIn company pages only (Boston Dynamics, Universal Robots, FANUC America, Agility Robotics, Figure AI, The Robot Report). Its messages carry a "not verified by a human" disclaimer.
 - Public RSS feeds and website headline collection, source management, and deduplication.
 - LinkedIn post import with source link, pasted summary, and optional direct media URL.
 - Direct public LinkedIn company/post/article HTML collection, including available photos and video URLs; no search API or API key.
 - Review queue with summary editing and explicit approval.
+- Delete button on every story (card and review dialog, with a confirm click). Deleted stories are not collected again; importing the same link manually brings it back.
+- Stories collected without a photo (LinkedIn and website) get the page's own photo from its preview image, or a LinkedIn video post's cover. This runs in the background after startup and after each source check; the dashboard shows new photos as they arrive. LinkedIn's generic "Posted on LinkedIn" image is ignored, and text-only posts stay without a photo. If a photo can't be downloaded at send time, the story goes out as text.
 - Photos/videos (direct public URLs, maximum 16 MB); plain text when no media is present.
 - Event ICS downloads and WhatsApp document attachments when event dates are entered.
 - Source checking every 30 minutes; daily sending in Asia/Kolkata. Server must stay running.
@@ -58,5 +60,7 @@ npm test
 ```
 
 Checks summary limits, category routing, event ICS formatting, separate bot settings, group validation, shared session views, and calendar API downloads. Browser checks in `tests/ui-check.mjs` also verify menus and mobile layout. `tests/qr-check.mjs` generates a QR on the running server and checks that both bot views share it, without scanning or sending. Live QR pairing and actual group delivery require a WhatsApp account and are not covered by offline tests.
+
 # news-bot
+
 # news-bot

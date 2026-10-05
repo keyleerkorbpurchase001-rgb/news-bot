@@ -42,7 +42,10 @@ const mediaUrl = (raw, base) => {
   if (typeof raw !== "string" || !raw.trim()) return null;
   try {
     const u = new URL(raw, base);
-    return u.protocol === "https:" ? u.href : null;
+    // static.licdn.com serves LinkedIn's generic "Posted on LinkedIn" art.
+    return u.protocol === "https:" && u.hostname !== "static.licdn.com"
+      ? u.href
+      : null;
   } catch {
     return null;
   }
@@ -233,4 +236,16 @@ export async function scrapeLinkedin(source, fetchHtml) {
         : "No public post text was available in this page. Use a company posts page or an individual public post URL.",
     );
   return [...items.values()].slice(0, 20);
+}
+// A page's own photo: its preview image (og:image), or for LinkedIn video
+// posts the cover of the first video in the main post.
+export function postImage(html, url) {
+  const $ = cheerio.load(html),
+    video = $(
+      "main .share-native-video video, .share-native-video video",
+    ).first();
+  return (
+    mediaUrl($('meta[property="og:image"]').attr("content"), url) ||
+    mediaUrl(video.attr("data-poster-url") || video.attr("poster"), url)
+  );
 }
